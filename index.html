@@ -1,0 +1,31 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script></head>
+<body>
+<h2>会員登録</h2>
+<form id="f">
+  <input id="name" placeholder="お名前"><br>
+  <input id="company" placeholder="会社名"><br>
+  <button type="submit">登録する</button>
+</form>
+<script>
+const LIFF_ID = "<YOUR_LIFF_ID>";
+const ENDPOINT = "https://your-n8n-domain/register/submit";
+liff.init({liffId: LIFF_ID});
+document.getElementById('f').onsubmit = async(e)=>{
+  e.preventDefault();
+  const p = await liff.getProfile();
+  await fetch(ENDPOINT, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      userId: p.userId,
+      displayName: p.displayName,
+      name: document.getElementById('name').value,
+      company: document.getElementById('company').value
+    })
+  });
+  alert("登録が完了しました");
+  liff.closeWindow();
+};
+</script></body></html>
