@@ -238,17 +238,28 @@
 
     async function initLiff() {
       try {
+        $("#statusText").textContent = "LIFF 初期化中…";
         await liff.init({ liffId: LIFF_ID });
-        $("#status").textContent = "LIFF 初期化完了";
+        $("#statusText").textContent = "LIFF 初期化完了";
+        
         if (!liff.isInClient()) {
-          $("#status").textContent = "LINEアプリ外で開かれました";
+          $("#statusText").textContent = "LINEアプリ外で開かれました";
           toast("LINEアプリから開いてください");
           // LINE内で開き直し
-          try { liff.openWindow({ url: `https://liff.line.me/${LIFF_ID}`, external: false }); } catch {}
+          try {
+            liff.openWindow({
+              url: `https://liff.line.me/${LIFF_ID}`, 
+              external: false });
+          } catch {}
           $("#retryBtn").classList.remove("hidden");
           return false;
         }
-        if (!liff.isLoggedIn()) { liff.login(); return false; }
+        
+        if (!liff.isLoggedIn()) {
+          $("#statusText").textContent = "ログイン要求中…";
+          liff.login();
+          return false;
+        }
 
         // プロフィール（表示用）
         try {
@@ -270,29 +281,30 @@
         }
 
         if (!isUId(uid)) {
-          $("#status").textContent = "ユーザーID未取得";
+          $("#statusText").textContent = "ユーザーID未取得";
           $("#err").textContent = "トークのリッチメニューからもう一度開いてください。";
-          $("#retryBtn").classList.remove("hidden");
           return false;
         }
 
         $("#userId").value = uid;
-        $("#status").textContent = "準備完了";
+        $("#statusText").textContent = "準備完了";
         return true;
       } catch (e) {
         console.error(e);
-        $("#status").textContent = "LIFF初期化失敗";
+        $("#statusText").textContent = "LIFF初期化失敗";
         $("#err").textContent = "初期化に失敗しました。しばらくしてから再度お試しください。";
-        $("#retryBtn").classList.remove("hidden");
         return false;
       }
     }
 
     document.addEventListener("DOMContentLoaded", async () => {
-      // 初期化だけ。ここでは送信しない（＝自動送信は一切なし）
+      // 年表記
+      const y = $("#year"); if (y) y.textContent = new Date().getFullYear();
+
+      // 初期化（自動送信はしない）
       await initLiff();
 
-      // 送信ハンドラ
+      // 送信ハンドラ（「登録する」押下時に送信）
       $("#f").addEventListener("submit", async (ev) => {
         ev.preventDefault();
         $("#err").textContent = "";
@@ -336,7 +348,13 @@
         }
       });
 
-      $("#retryBtn").addEventListener("click", () => location.reload());
+      // 「閉じる」ボタン（なければ無視）
+      const closeBtn = $("#closeBtn");
+      if (closeBtn) {
+        closeBtn.addEventListener("click", () => {
+          try { liff.closeWindow(); } catch { history.back(); }
+        });
+      }
     });
   </script>
 </body>
