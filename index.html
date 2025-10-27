@@ -230,102 +230,104 @@
     const LIFF_ID = "2008362526-kG8aEZjJ";
     const ENDPOINT = "https://n8n-rag.xvps.jp/webhook-test/register/submit";
     // ================================================================
-
-    const $ = sel => document.querySelector(sel);
-    const toast = (msg, cls="") => {
-      const el = $("#toast"); el.textContent = msg;
-      el.className = "toast show " + cls;
-      setTimeout(()=>{ el.classList.remove("show"); }, 2600);
-    };
-
-    const setBusy = (busy) => {
-      const btn = $("#submitBtn");
-      btn.disabled = busy;
-      btn.textContent = busy ? "送信中…" : "登録する";
-      $("#err").textContent = "";
-    };
-
-    const safe = (s) => String(s || "").replace(/[\\u0000-\\u001F\\u007F]/g,"").trim();
-
-    (async () => {
-      $("#year").textContent = new Date().getFullYear();
-
+    
+    const $ = s => document.querySelector(s);
+    const toast = (m) => { const t = document.getElementById('toast'); t.textContent=m;t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2400); };
+    
+    async function initLiff() {
+      await liff.init({ liffId: LIFF_ID });
+    
+      // LINEアプリ内か？
+      if (!liff.isInClient()) {
+        toast("LINEアプリから開いてください");
+        // 必要なら自動でLINE内に開き直す
+        liff.openWindow({ url: `https://liff.line.me/${LIFF_ID}`, external: false });
+        throw new Error("Not in LINE client");
+      }
+    
+      if (!liff.isLoggedIn()) {
+        liff.login();
+        return false; // ここで遷移する
+      }
+      return true;
+    }
+    
+    async function getUser() {
+      // 1st: getProfile
       try {
-        $("#statusText").textContent = "LIFF初期化中…";
-        await liff.init({ liffId: LIFF_ID });
-
-        if (!liff.isInClient()) {
-          $("#statusText").textContent = "ブラウザで開いています。LINEアプリから開いてください。";
-          toast("LINEアプリから開く必要があります。", "error");
-        }
-
-        if (!liff.isLoggedIn()) {
-          liff.login();
-          return;
-        }
-
         const p = await liff.getProfile();
-        $("#greeting").textContent = p?.displayName ? `こんにちは、${p.displayName} さん` : "プロフィール取得に失敗しました";
-        $("#userId").value = p.userId || "";
-        $("#displayName").value = p.displayName || "";
-        $("#statusText").textContent = "準備完了";
-
+        if (p?.userId) return { userId: p.userId, displayName: p.displayName || "" };
+      } catch {}
+    
+      // 2nd: OpenID (LIFFスコープに openid を付けている場合)
+      try {
+        const idt = await liff.getIDToken();
+        const dec = liff.getDecodedIDToken?.(); // 一部環境で同期取得
+        if (dec?.sub) return { userId: dec.sub, displayName: dec.name || "" };
+      } catch {}
+    
+      // 3rd: コンテキスト（チャット起動時のみ参照できることがあります）
+      try {
+        const ctx = liff.getContext?.();
+        if (ctx?.userId) return { userId: ctx.userId, displayName: "" };
+      } catch {}
+    
+      return { userId: "", displayName: "" };
+    }
+    
+    (async () => {
+      try {
+        const ok = await initLiff();
+        if (!ok) return; // loginでリダイレクト
+    
+        const u = await getUser();
+        $("#userId").value = u.userId || "";
+        $("#displayName").value = u.displayName || "";
+        $("#greeting").textContent = u.displayName ? `こんにちは、${u.displayName} さん` : "プロフィール取得に失敗しました";
       } catch (e) {
         console.error(e);
-        $("#statusText").textContent = "LIFF初期化に失敗しました";
         $("#greeting").textContent = "LIFF初期化に失敗しました";
-        toast("LIFFの初期化に失敗しました", "error");
       }
-
-      $("#closeBtn").addEventListener("click", () => {
-        try { liff.closeWindow(); } catch { window.history.back(); }
-      });
-
-      $("#f").addEventListener("submit", async (e) => {
+    
+      document.getElementById("f").addEventListener("submit", async (e) => {
         e.preventDefault();
-        setBusy(true);
-
-        const payload = {
-          userId: safe($("#userId").value),
-          displayName: safe($("#displayName").value),
-          name: safe($("#name").value),
-          company: safe($("#company").value),
-          note: safe($("#note").value),
-          // 必要に応じて: idToken を使う場合は以下のコメントアウトを外してください
-          // idToken: await liff.getIDToken()
-        };
-
-        // 簡易バリデーション
-        if (!payload.name || !payload.company) {
-          $("#err").textContent = "お名前と会社名は必須です。";
-          setBusy(false);
+    
+        // ここで最終チェック：userId が空なら送らない
+        const userId = $("#userId").value.trim();
+        if (!userId) {
+          toast("ユーザー情報が取得できません。LINEアプリから開き直してください。");
           return;
         }
-
-        try {
-          const res = await fetch(ENDPOINT, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-          });
-
-          if (res.ok) {
-            toast("登録が完了しました。ありがとうございます！", "success");
-            setTimeout(() => { try { liff.closeWindow(); } catch { location.href="/"; }}, 1200);
-          } else {
-            const t = await res.text();
-            $("#err").textContent = "送信に失敗しました。時間をおいて再度お試しください。";
-            toast("送信エラー: " + t.slice(0,120), "error");
-            setBusy(false);
-          }
-        } catch (err) {
-          console.error(err);
-          $("#err").textContent = "ネットワークエラーが発生しました。通信環境をご確認ください。";
-          toast("ネットワークエラー", "error");
-          setBusy(false);
+    
+        const payload = {
+          userId,
+          displayName: $("#displayName").value.trim(),
+          name: $("#name").value.trim(),
+          company: $("#company").value.trim(),
+          note: $("#note").value.trim()
+          // idToken: await liff.getIDToken()  // （サーバ検証するなら送る）
+        };
+    
+        // 必須
+        if (!payload.name || !payload.company) {
+          document.getElementById("err").textContent = "お名前と会社名は必須です。";
+          return;
+        }
+    
+        const res = await fetch(ENDPOINT, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)
+        });
+    
+        if (res.ok) {
+          toast("登録完了しました。ありがとうございます！");
+          setTimeout(() => { try { liff.closeWindow(); } catch {} }, 1000);
+        } else {
+          toast("送信エラーが発生しました");
         }
       });
     })();
-  </script>
+</script>
 </body>
 </html>
