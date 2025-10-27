@@ -232,72 +232,88 @@
     // ================================================================
     
     const $ = s => document.querySelector(s);
-    const toast = (m) => { const t = document.getElementById('toast'); t.textContent=m;t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2400); };
-    
-    async function initLiff() {
-      await liff.init({ liffId: LIFF_ID });
-    
-      // LINEアプリ内か？
-      if (!liff.isInClient()) {
-        toast("LINEアプリから開いてください");
-        // 必要なら自動でLINE内に開き直す
-        liff.openWindow({ url: `https://liff.line.me/${LIFF_ID}`, external: false });
-        throw new Error("Not in LINE client");
-      }
-    
-      if (!liff.isLoggedIn()) {
-        liff.login();
-        return false; // ここで遷移する
-      }
-      return true;
-    }
-    
-    async function getUser() {
-      // 1st: getProfile
-      try {
-        const p = await liff.getProfile();
-        if (p?.userId) return { userId: p.userId, displayName: p.displayName || "" };
-      } catch {}
-    
-      // 2nd: OpenID (LIFFスコープに openid を付けている場合)
-      try {
-        const idt = await liff.getIDToken();
-        const dec = liff.getDecodedIDToken?.(); // 一部環境で同期取得
-        if (dec?.sub) return { userId: dec.sub, displayName: dec.name || "" };
-      } catch {}
-    
-      // 3rd: コンテキスト（チャット起動時のみ参照できることがあります）
-      try {
-        const ctx = liff.getContext?.();
-        if (ctx?.userId) return { userId: ctx.userId, displayName: "" };
-      } catch {}
-    
-      return { userId: "", displayName: "" };
-    }
+    const log = (m) => {
+      if (new URLSearchParams(location.search).get('debug') === '1') console.log('[LIFF]', m);
+      const t = document.getElementById('toast'); t.textContent = m; t.classList.add('show');
+      setTimeout(()=>t.classList.remove('show'), 1800);
+    };
     
     (async () => {
+      const status = $("#statusText");
+      const greet  = $("#greeting");
+    
+      // 1) SDKロード確認
+      if (!window.liff) { log("LIFF SDKが読み込まれていません"); return; }
+    
       try {
-        const ok = await initLiff();
-        if (!ok) return; // loginでリダイレクト
+        status.textContent = "LIFF初期化中…";
+        // withLoginOnExternalBrowser: 外部ブラウザでも自動ログインさせたい場合に有効化
+        await liff.init({ liffId: LIFF_ID /*, withLoginOnExternalBrowser: true */ });
     
-        const u = await getUser();
-        $("#userId").value = u.userId || "";
-        $("#displayName").value = u.displayName || "";
-        $("#greeting").textContent = u.displayName ? `こんにちは、${u.displayName} さん` : "プロフィール取得に失敗しました";
-      } catch (e) {
-        console.error(e);
-        $("#greeting").textContent = "LIFF初期化に失敗しました";
-      }
-    
-      document.getElementById("f").addEventListener("submit", async (e) => {
-        e.preventDefault();
-    
-        // ここで最終チェック：userId が空なら送らない
-        const userId = $("#userId").value.trim();
-        if (!userId) {
-          toast("ユーザー情報が取得できません。LINEアプリから開き直してください。");
+        // 2) LINEアプリ内チェック
+        if (!liff.isInClient()) {
+          log("LINEアプリから開いてください");
+          // 自動でLINE内へ開き直す（失敗時はユーザー操作に任せる）
+          try { liff.openWindow({ url: `https://liff.line.me/${LIFF_ID}`, external: false }); } catch {}
           return;
         }
+    
+        // 3) ログイン確保
+        if (!liff.isLoggedIn()) {
+          log("ログインします…");
+          liff.login();
+          return; // ここでリダイレクト
+        }
+    
+        // 4) プロフィール取得（フォールバック付き）
+        let userId = "", displayName = "";
+        try {
+          const p = await liff.getProfile();
+          userId = p?.userId || "";
+          displayName = p?.displayName || "";
+        } catch (e) {
+          log("getProfile失敗、フォールバック実行");
+        }
+        if (!userId && liff.getDecodedIDToken) {
+          try {
+            const dec = liff.getDecodedIDToken();
+            userId = userId || dec?.sub || "";
+            displayName = displayName || dec?.name || "";
+          } catch {}
+        }
+        if (!userId && liff.getContext) {
+          try {
+            const ctx = liff.getContext();
+            userId = userId || ctx?.userId || "";
+          } catch {}
+        }
+    
+        // 5) 表示・保持
+        $("#userId").value = (userId || "").trim();
+        $("#displayName").value = (displayName || "").trim();
+        greet.textContent = displayName ? `こんにちは、${displayName} さん` : "プロフィール取得に失敗しました";
+        status.textContent = userId ? "準備完了" : "ユーザーID未取得";
+    
+        // 6) 未取得なら即アラート（送信させない）
+        if (!userId) {
+          log("ユーザーIDが取得できませんでした（LIFF設定/起動方法を確認）");
+        }
+    
+      } catch (e) {
+        console.error(e);
+        status.textContent = "LIFF初期化に失敗";
+        greet.textContent  = "LIFF初期化に失敗しました";
+        // 代表的な失敗メッセージをヒント表示
+        if (e?.message?.includes("liffId")) log("LIFF IDが無効の可能性");
+        else log("Endpoint URL/Scope/profile の設定を確認してください");
+        return;
+      }
+    
+      // 送信ハンドラ（userIdが空なら中断）
+      document.getElementById("f").addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const userId = $("#userId").value.trim();
+        if (!userId) { log("LINEアプリから開き直してください"); return; }
     
         const payload = {
           userId,
@@ -305,28 +321,21 @@
           name: $("#name").value.trim(),
           company: $("#company").value.trim(),
           note: $("#note").value.trim()
-          // idToken: await liff.getIDToken()  // （サーバ検証するなら送る）
+          // idToken: await liff.getIDToken() // サーバ検証を入れるなら
         };
-    
-        // 必須
-        if (!payload.name || !payload.company) {
-          document.getElementById("err").textContent = "お名前と会社名は必須です。";
-          return;
-        }
     
         const res = await fetch(ENDPOINT, {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify(payload)
         });
-    
-        if (res.ok) {
-          toast("登録完了しました。ありがとうございます！");
-          setTimeout(() => { try { liff.closeWindow(); } catch {} }, 1000);
-        } else {
-          toast("送信エラーが発生しました");
-        }
+        if (res.ok) { log("登録完了！"); setTimeout(()=>{ try{ liff.closeWindow(); }catch{} }, 800); }
+        else { log("送信エラー: " + (await res.text()).slice(0,100)); }
       });
+    
+      // ブラウザ側の未捕捉エラーも拾って画面表示
+      window.addEventListener('unhandledrejection', ev => { console.error(ev.reason); log("初期化エラー(reject)"); });
+      window.addEventListener('error', ev => { console.error(ev.error || ev.message); });
     })();
 </script>
 </body>
