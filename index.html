@@ -230,63 +230,114 @@
     const LIFF_ID = "2008370167-ZP2krX20";
     const ENDPOINT = "https://n8n-rag.xvps.jp/webhook/register/submit";
     // ================================================================
-    const $ = s => document.querySelector(s);
-    
-    const isUId = u => /^U[0-9a-f]{32}$/i.test(u || "");
-    
-    (async () => {
-      await liff.init({ liffId: LIFF_ID });
-    
-      // LINEアプリ内で
-      if (!liff.isInClient()) {
-        liff.openWindow({ url: `https://liff.line.me/${LIFF_ID}`, external: false });
-        return;
-      }
-      if (!liff.isLoggedIn()) { liff.login(); return; }
-    
-      // 1) トーク起点ならここで U… が取れる
-      const ctx = liff.getContext?.() || {};
-      let userId = ctx.userId || "";     // ★ これを最優先
-      let displayName = "";
-    
-      // 2) 表示名（任意）
+    const $ = sel => document.querySelector(sel);
+    const toast = (m) => { const t = $("#toast"); t.textContent = m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"), 2200); };
+    const setBusy = (busy) => { const b = $("#submitBtn"); b.disabled = busy; b.textContent = busy ? "送信中…" : "登録する"; $("#err").textContent = ""; };
+    const safe = (s) => (s || "").toString().trim();
+    const isUId = (u) => /^U[0-9a-f]{32}$/i.test(u || "");
+
+    async function initLiff() {
       try {
-        const p = await liff.getProfile();
-        displayName = p?.displayName || "";
-      } catch {}
-    
-      // 3) 送信
-      const idToken = await liff.getIDToken(); // scope: openid 推奨
-      const payload = {
-        userId,                   // ← U…ならこれで完成
-        displayName,
-        name: $("#name").value.trim(),
-        company: $("#company").value.trim(),
-        idToken                   // ← サーバ側でaud検証に使用（偽装対策）
-      };
-    
-      // 4) context.userId が取れなかった場合のフォールバック判定
-      if (!isUId(payload.userId)) {
-        // ここでは画面に「トークのメニューから再度開いてください」と出して送信中止
-        alert("トーク画面のリッチメニューから再度開いてください（Mini App 起動が必要です）");
-        return;
+        await liff.init({ liffId: LIFF_ID });
+        $("#status").textContent = "LIFF 初期化完了";
+        if (!liff.isInClient()) {
+          $("#status").textContent = "LINEアプリ外で開かれました";
+          toast("LINEアプリから開いてください");
+          // LINE内で開き直し
+          try { liff.openWindow({ url: `https://liff.line.me/${LIFF_ID}`, external: false }); } catch {}
+          $("#retryBtn").classList.remove("hidden");
+          return false;
+        }
+        if (!liff.isLoggedIn()) { liff.login(); return false; }
+
+        // プロフィール（表示用）
+        try {
+          const p = await liff.getProfile();
+          $("#displayName").value = p?.displayName || "";
+          $("#greeting").textContent = p?.displayName ? `こんにちは、${p.displayName} さん` : "ようこそ。";
+        } catch {}
+
+        // Mini App（トーク起点）なら context.userId が U… で取得できるケースあり
+        let uid = "";
+        try {
+          const ctx = liff.getContext?.() || {};
+          uid = ctx.userId || "";
+        } catch {}
+
+        // 念のため getProfile からも拾う（MiniAppでは userId を返す環境が多い）
+        if (!isUId(uid)) {
+          try { const p = await liff.getProfile(); uid = uid || p?.userId || ""; } catch {}
+        }
+
+        if (!isUId(uid)) {
+          $("#status").textContent = "ユーザーID未取得";
+          $("#err").textContent = "トークのリッチメニューからもう一度開いてください。";
+          $("#retryBtn").classList.remove("hidden");
+          return false;
+        }
+
+        $("#userId").value = uid;
+        $("#status").textContent = "準備完了";
+        return true;
+      } catch (e) {
+        console.error(e);
+        $("#status").textContent = "LIFF初期化失敗";
+        $("#err").textContent = "初期化に失敗しました。しばらくしてから再度お試しください。";
+        $("#retryBtn").classList.remove("hidden");
+        return false;
       }
-    
-      // 5) 送信
-      $("#submitBtn").disabled = true; $("#submitBtn").textContent = "送信中…";
-      const res = await fetch(ENDPOINT, {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(payload)
+    }
+
+    document.addEventListener("DOMContentLoaded", async () => {
+      // 初期化だけ。ここでは送信しない（＝自動送信は一切なし）
+      await initLiff();
+
+      // 送信ハンドラ
+      $("#f").addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        $("#err").textContent = "";
+
+        const userId = safe($("#userId").value);
+        const name = safe($("#name").value);
+        const company = safe($("#company").value);
+        const note = safe($("#note").value);
+        const displayName = safe($("#displayName").value);
+
+        if (!isUId(userId)) {
+          $("#err").textContent = "ユーザー情報を取得できませんでした。トークのメニューから開き直してください。";
+          toast("ユーザー情報エラー");
+          return;
+        }
+        if (!name || !company) {
+          $("#err").textContent = "お名前と会社名は必須です。";
+          return;
+        }
+
+        setBusy(true);
+        try {
+          const payload = { userId, name, company, displayName, note };
+          const res = await fetch(ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (res.ok) {
+            toast("登録が完了しました。ありがとうございます！");
+            setTimeout(() => { try { liff.closeWindow(); } catch {} }, 900);
+          } else {
+            const tx = await res.text().catch(()=>"(no body)");
+            $("#err").textContent = "送信に失敗しました: " + (tx || res.status);
+            setBusy(false);
+          }
+        } catch (e) {
+          console.error(e);
+          $("#err").textContent = "通信エラーが発生しました。時間をおいて再度お試しください。";
+          setBusy(false);
+        }
       });
-      if (res.ok) {
-        alert("登録が完了しました。メニューを更新します。");
-        try { liff.closeWindow(); } catch {}
-      } else {
-        alert("送信に失敗しました。しばらくしてからもう一度お試しください。");
-        $("#submitBtn").disabled = false; $("#submitBtn").textContent = "登録する";
-      }
-    })();
+
+      $("#retryBtn").addEventListener("click", () => location.reload());
+    });
   </script>
 </body>
 </html>
